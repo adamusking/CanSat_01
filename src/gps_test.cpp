@@ -15,6 +15,7 @@ void setup() {
   GPS.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);  // start GPS UART communication at 9600 baud
 
   Serial.println("GPS Module Initialized. Waiting for GPS signal...");
+  int x;
 }
 
 void loop() {
