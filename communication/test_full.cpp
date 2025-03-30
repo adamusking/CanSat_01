@@ -44,7 +44,7 @@ void handleCommand(String cmd) {
 
     if (command == "LORA") {
         Serial.println("Switching to LoRa mode...");
-        radio.begin(868.0, 500.0, 7, 5, 0x3F, 17, 8, 0);
+        radio.begin(866.0, 125.0, 7, 5, 0xA5, 17, 12, 0);
         radio.setCRC(true);
         mode = true;
     } else if (command == "FSK") {
@@ -68,7 +68,7 @@ void setup() {
     Serial.println("LoRa initializing ...");
     SPI.begin(sck, miso, mosi, ss);
 
-    int state = radio.begin();
+    int state = radio.begin(866.0, 125.0, 7, 5, 0xA5, 17, 12, 0);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("LoRa initialization failed, code ");
         Serial.println(state);
