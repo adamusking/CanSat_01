@@ -12,7 +12,7 @@
 #define receive_window 150
 #define stand_by_time 5000
 
-SX1278 radio = SX1278(new Module(ss, dio0, rst));
+SX1276 radio = SX1276(new Module(ss, dio0, rst));
 
 uint16_t packetID = 0;
 bool mode = true;
@@ -75,9 +75,10 @@ void setup() {
         while (true) delay(1000);
     }
     Serial.println("LoRa initialized successfully!");
-    radio.setCRC(true);
     radio.setPacketSentAction(setTransmitFlag);
     radio.setPacketReceivedAction(setReceiveFlag);
+
+    radio.setCRC(true);
 }
 
 void loop() {
@@ -95,7 +96,7 @@ void loop() {
     }
 
     packetID++;
-    String data = "ID" + String(packetID) + ",Hello World!";
+    String data = "ID:" + String(packetID) + ",Hello World!";
 
     Serial.println("Sending packet...");
     transmissionState = radio.startTransmit(data);
