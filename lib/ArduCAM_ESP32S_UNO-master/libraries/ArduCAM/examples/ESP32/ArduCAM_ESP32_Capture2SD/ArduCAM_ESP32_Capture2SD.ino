@@ -30,9 +30,9 @@
 #error Please select the hardware platform and camera module in the ../libraries/ArduCAM/memorysaver.h file
 #endif
 
-const int CAM_POWER_ON = D10;
+const int CAM_POWER_ON = 0;
 // set GPIO16 as the slave select :
-const int CS = 17;
+const int CS = 10;
 //Version 2,set GPIO0 as the slave select :
 char pname[20];
 //static int  index=0;

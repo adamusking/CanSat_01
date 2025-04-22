@@ -31,7 +31,7 @@
 #error Please select the hardware platform and camera module in the ../libraries/ArduCAM/memorysaver.h file
 #endif
 
-const int CAM_POWER_ON = D10;
+const int CAM_POWER_ON = 0;
 const int sleepTimeS = 10;
 // set GPIO16 as the slave select :
 const int CS = 17;
