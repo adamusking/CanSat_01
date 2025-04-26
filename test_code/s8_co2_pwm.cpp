@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-const int pwmPin = 4; // GPIO pin connected to the Senseair S8 PWM output
+const int pwmPin = 4;// GPIO pin connected to the Senseair S8 PWM output
 
 void setup() {
     pinMode(pwmPin, INPUT);

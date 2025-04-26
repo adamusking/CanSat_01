@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <TinyGPS++.h>
 #include <HardwareSerial.h>
+#include <esp_system.h>
 
 
 
@@ -27,6 +28,8 @@ HardwareSerial GPS(1);  // use UART1 for the GPS module
 const int CS = 10;
 const int CAM_POWER_ON = 0;
 
+const int pwmPin = 4;
+
 ArduCAM myCAM(OV5642, CS);
 
 float TVOC;
@@ -35,6 +38,8 @@ float latitude;
 float longitude;
 float pressure;
 float altitude;
+float co2ppm;
+int camerainitialized;
 
 
 void initializeCamera();
@@ -48,6 +53,7 @@ void startCapture();
 void waitForCaptureComplete();
 void sendCapturedImageOverSerial();
 void bmpRead();
+void s8Read();
 
 
 void setup() {
@@ -75,6 +81,8 @@ void setup() {
   
     myCAM.clear_fifo_flag();
     delay(100);
+
+    pinMode(pwmPin, INPUT);
 
     Serial.println("Initializing BMP390");
 
@@ -104,6 +112,8 @@ void loop(){
   startCapture();
   waitForCaptureComplete();
   sendCapturedImageOverSerial();
+  s8Read();
+  delay(500);
 }
 
 
@@ -112,7 +122,7 @@ void loop(){
     uint8_t temp = myCAM.read_reg(ARDUCHIP_TEST1);
     if (temp != 0x55) {
       Serial.println(F("[ERROR] SPI interface Error!"));
-      while (1);
+      
     }
   }
   
@@ -127,12 +137,13 @@ void loop(){
       Serial.println(F("[ERROR] Can't find OV5642 module!"));
     } else {
       Serial.println(F("[INFO] OV5642 detected."));
+      camerainitialized=1;
     }
   }
 
   void bmpRead() {
     if (!bmp.performReading()) {
-        Serial.println("Failed to read data!");
+        Serial.println("Failed to BMP read data!");
         return;
     }
 
@@ -154,7 +165,9 @@ void loop(){
   }
 
   void readGPS() {
-    
+    while (GPS.available()) {  // check if GPS data is coming in
+      gps.encode(GPS.read());  // process incoming characters
+    }
     if (gps.location.isValid()) {  // ensure that we have a valid GPS fix
       Serial.print("Latitude: ");
       Serial.print(gps.location.lat(), 6);  // print latitude with 6 decimal places
@@ -168,12 +181,16 @@ void loop(){
       Serial.print(gps.speed.kmph());  // speed in km/h
       Serial.print(" Course: ");
       Serial.println(gps.course.deg());  // course in degrees
+      
     
+  }
+  else{
+    Serial.println("Invalid GPS data");
   }
   }
   void readSGP(){
     if (!sgp.IAQmeasure()) {
-      Serial.println("Measurement failed");
+      Serial.println("SGP Measurement failed");
       return;
   }
 
@@ -186,19 +203,24 @@ void loop(){
   Serial.println(" ppb");
   }
   void startCapture() {
+    if (camerainitialized==1){
     Serial.println(F("[INFO] Starting capture..."));
     myCAM.clear_fifo_flag();
     myCAM.start_capture();
+    }
   }
   
   void waitForCaptureComplete() {
+    if (camerainitialized==1){
     while (!myCAM.get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK)) {
       delay(10);
     }
     Serial.println(F("[INFO] Capture complete."));
   }
+}
   
   void sendCapturedImageOverSerial() {
+    if (camerainitialized==1){
     uint32_t len = myCAM.read_fifo_length();
   
     if (len == 0) {
@@ -230,5 +252,23 @@ void loop(){
   
     Serial.println("IMG_END");  // Marker for receiver
     Serial.println(F("[INFO] Image sent over Serial."));
+  }
+}
+
+  void s8Read() {
+    uint32_t highDuration = pulseIn(pwmPin, HIGH);
+    uint32_t lowDuration = pulseIn(pwmPin, LOW);
+    uint32_t period = highDuration + lowDuration;
+    if (period > 0) {
+        float co2Concentration = (highDuration / (float)period) * 2000.0;
+        Serial.print("CO2 Concentration: ");
+        Serial.print(co2Concentration);
+        Serial.println(" ppm");
+        co2ppm=co2Concentration;
+        
+    } else {
+        Serial.println("Error: Invalid period CO2 measurement.");
+        Serial.println(period);
+    }
   }
   

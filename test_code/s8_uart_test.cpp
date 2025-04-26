@@ -5,7 +5,8 @@
  #include <Arduino.h>
  #include "s8_uart.h"
  
- 
+ #define S8_RX_PIN 18         // Rx pin which the S8 Tx pin is attached to (change if it is needed)
+ #define S8_TX_PIN 17 
  /* BEGIN CONFIGURATION */
  #define DEBUG_BAUDRATE 115200
  
@@ -51,7 +52,7 @@
    Serial.println("Init");
  
    // Initialize S8 sensor
-   S8_serial.begin(S8_BAUDRATE);
+   S8_serial.begin(S8_BAUDRATE, SERIAL_8N1, S8_RX_PIN, S8_TX_PIN); // add pin definitions here like this S8_serial.begin(S8_BAUDRATE, SERIAL_8N1, S8_RX_PIN, S8_TX_PIN);  S8_serial.begin(S8_BAUDRATE);
    sensor_S8 = new S8_UART(S8_serial);
  
    // Check if S8 is available
@@ -88,5 +89,5 @@
    //printf("PWM output = %0.0f ppm\n", (sensor.pwm_output / 16383.0) * 2000.0);
  
    // Wait 5 second for next measure
-   delay(5000);
+   delay(1000);
  }
