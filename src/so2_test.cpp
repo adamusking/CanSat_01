@@ -25,13 +25,13 @@ void setup() {
 }
 
 void loop() {
-  int16_t adc0 = ads.readADC_SingleEnded(2);
+  int16_t adc0 = ads.readADC_SingleEnded(0);
  
   float voltage = adc0 * 0.000125;  // convert ADC value to voltage
   Serial.println(adc0);
-  float concentration=voltage/0.03;
+  float concentration=voltage/0.02;
   
-  Serial.print("NO2 Concentration: ");
+  Serial.print("SO2 Concentration: ");
   Serial.print(concentration);
   Serial.println(" ppm");
 
