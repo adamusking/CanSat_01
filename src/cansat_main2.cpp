@@ -1,4 +1,3 @@
-#undef swap
 #include <Wire.h>
 #include <ArduCAM.h>
 #include <SPI.h>
@@ -10,11 +9,8 @@
 #include <TinyGPS++.h>
 #include <HardwareSerial.h>
 #include <esp_system.h>
-//#include <FS.h>
-//#include <SD.h>
+#include <SdFat.h>
 
-
-#undef swap
 
 
 #define I2C_SDA 45
@@ -30,20 +26,24 @@
 #define MISO_PIN 42
 #define MOSI_PIN 36
 
+const int CAM_CS = 1;
+const int buzzerPin = 8;
+const int pwmPin = 4;// 15 alebo 17
+
+#define BATTERY_PIN 20            
+#define ADC_MAX 4095              
+#define ADC_REF_VOLTAGE 3.3         // Default ADC reference voltage
+#define VOLTAGE_DIVIDER_SCALE 8.4 / 2.9178  
+#define BMS_CUTOFF_VOLTAGE 6.0 
+
 Adafruit_ADS1115 ads;
 Adafruit_BMP3XX bmp;
 TinyGPSPlus gps;  
 Adafruit_SGP30 sgp;
-
+SdFat SD;
+SdFile myFile;
 HardwareSerial GPS(1);  // use UART1 for the GPS module
 
-
-
-const int CAM_CS = 1;
-
-const int buzzerPin = 8;
-
-const int pwmPin = 4;// 15 alebo 17
 
 ArduCAM myCAM(OV5642, CAM_CS);
 
@@ -53,20 +53,37 @@ float TVOC;
 float temperature;
 float latitude;
 float longitude;
+float speed;
 float pressure;
-float altitude;
+float pressureAltitude;
+float pressureAltSeaLevel;
 float co2ppm;
 float CO;
 float NO2;
 float SO2;
 float CH4;
+float gpsAltitudeSeaLevel;
+float gpsAltSeaLevel;
+float battery;
+float measured_voltage;      // From ADC reading
+float battery_voltage;
+float startingPressure;
+float gpsStartingAlt;
+float altSum;
+float gpsAltitude;
+
 int camerainitialized;
 const int maxRetries=5;
-int attempt;
 
-//bool gpsAvailable = false;
-//String lastBackupFile = "";
-//uint32_t backupCounter = 0;
+int attempt;
+int raw_adc;
+int counting;
+int countingGPS;
+int pressureSum;
+
+char filename[32];
+
+char timestamp[20]; 
 
 
 void initializeCamera();
@@ -80,17 +97,23 @@ void bmpRead();
 void s8Read();
 void saveSensorData();
 void readAnalogSensors();
-//String getTimestamp();
+void writeDataToSD();
+void saveImageToSD();
+void baterryPercentage();
+String getTimestamp();
 
 
 void setup() {
   
-  pinMode(buzzerPin, OUTPUT);
+    pinMode(buzzerPin, OUTPUT);
     Serial.begin(115200);
-    Serial.println("zacal setup");
+    
     pinMode(CAM_CS, OUTPUT);
-    digitalWrite(CAM_CS, HIGH);
-  
+    pinMode(buzzerPin, OUTPUT);
+    pinMode(SD_CS, OUTPUT);
+    pinMode(BATTERY_PIN, INPUT);
+    analogReadResolution(12);
+
     Wire.begin(I2C_SDA, I2C_SCL);
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN);
     //SPI.setFrequency(4000000); // 4MHz
@@ -182,29 +205,52 @@ void setup() {
     Serial.println("ADS initialized");
     ads.setGain(GAIN_ONE); 
     }
-    
-  }
+    while (!SD.begin(SD_CS)&&attempt<maxRetries) {
+      Serial.println("SD card initialization failed!");
+      Serial.print(attempt);
+      attempt++;
+    }
+    if (attempt=maxRetries)
+      {
+      Serial.println("SD card failed to initialize, moving on");
+      attempt=0;
+      }
+    else{
+    Serial.println("SD card initialized.");
+    attempt=0;
+    }
+    if (!myFile.open("data.csv", O_WRITE | O_CREAT | O_APPEND)) {
+      Serial.println("Failed to open file.");
+      
+    }
+    myFile.println("Time, Temperature, CO (ppm), CO2 (ppm), TVOC (ppb), NO2 (ppm), SO2 (ppm),  CH4 (ppm), Coordinates (Lat, Lon), Altitude GPS (m), Pressure (hPa), Speed (km/h), Altitude pressure (m) ");
+    myFile.close();
+    }
+
 
 
 void loop(){
   //bmpRead();
   readGPS();
   readSGP();
+
   //startCapture();
   //waitForCaptureComplete();
   //sendCapturedImageOverSerial();
+
   //s8Read();
+
   readAnalogSensors();
+  writeDataToSD();
   
-  //String timestamp = getTimestamp();
-
-  //saveSensorData(); // add every single data point
-
+  //saveImageToSD();
+  
+  baterryPercentage();
   //tone(buzzerPin, 8000);  
   //delay(500);
-
   //noTone(buzzerPin);      
-    
+  String timestamp = getTimestamp();
+  
   delay(1000);
 }
 
@@ -263,14 +309,30 @@ void loop(){
     Serial.println(" °C");
 
     Serial.print("Pressure = ");
-    Serial.print(bmp.pressure / 100.0);
-    temperature=(bmp.pressure/100);
+    pressure=(bmp.pressure/100);
+    Serial.print(pressure);
     Serial.println(" hPa");
 
-    Serial.print("Altitude = ");
+    Serial.print("Altitude from sea level = ");
     Serial.print(bmp.readAltitude(1013.25));
-    altitude=bmp.readAltitude(1013.25);
+    pressureAltitude=bmp.readAltitude(1013.25);
     Serial.println(" m");
+
+    Serial.print("Altitude = ");
+    Serial.print(bmp.readAltitude(startingPressure));
+    pressureAltitude=bmp.readAltitude(startingPressure);
+    Serial.println(" m");
+
+    if (counting < 10)
+    {
+      counting++;
+      pressureSum=pressureSum+pressure;
+    }
+    else if (counting==10)
+    {
+      startingPressure=pressureSum/10;
+      counting++;
+    }
   }
 
   void readGPS() {
@@ -286,11 +348,29 @@ void loop(){
       longitude=(gps.location.lng(), 6);
       Serial.print(" Altitude: ");
       Serial.print(gps.altitude.meters());
+      gpsAltitudeSeaLevel=gps.altitude.meters();
+      if (countingGPS<5)
+      {
+        countingGPS++;
+        altSum=gpsAltitudeSeaLevel+altSum;
+      }
+      else if (countingGPS==5)
+      {
+        countingGPS++;
+        gpsStartingAlt=altSum/5;
+      }
+      gpsAltitude=gpsAltitudeSeaLevel-gpsStartingAlt;
+
       Serial.print(" Speed: ");
       Serial.print(gps.speed.kmph());
+      speed=gps.speed.kmph();
       Serial.print(" Course: ");
       Serial.println(gps.course.deg());
+      
      // gpsAvailable = gps.location.isValid() && gps.time.isValid();
+     const char* timestamp = "20240501_153210";
+    char filename[32];
+    snprintf(filename, sizeof(filename), "%s.jpg", timestamp);
     
   }
   else{
@@ -387,7 +467,7 @@ void loop(){
     
     float concentration=voltage/0.02;
   
-    float CO=concentration;
+    CO=concentration;
     Serial.print("CO Concentration: ");
     Serial.print(concentration);
     Serial.print(" ppm ");
@@ -398,7 +478,7 @@ void loop(){
   
     concentration=voltage/0.02;
 
-    float SO2=concentration;
+    SO2=concentration;
     Serial.print("SO2 Concentration: ");
     Serial.print(concentration);
     Serial.print(" ppm ");
@@ -409,7 +489,7 @@ void loop(){
   
     concentration=voltage/0.03;
     
-    float NO2=concentration;
+    NO2=concentration;
     Serial.print("NO2 Concentration: ");
     Serial.print(concentration);
     Serial.print(" ppm ");
@@ -419,4 +499,123 @@ void loop(){
     Serial.print("CH4 ADC value: ");
     Serial.println(adc0);
   }
+void writeDataToSD() {
+  if (myFile.open("data.csv", O_WRITE | O_APPEND)) {
+    // Write data to file (replace timestamp with actual timestamp generation logic)
+    myFile.print(timestamp);  // Placeholder for timestamp
+    myFile.print(", ");
+    myFile.print(temperature);
+    myFile.print(", ");
+    Serial.println(NO2);
+    myFile.print(", ");
+    myFile.print(CO);
+    myFile.print(", ");
+    myFile.print(NO2);
+    myFile.print(", ");
+    myFile.print(SO2);
+    myFile.print(", ");
+    myFile.print(TVOC);
+    myFile.print(", ");
+    myFile.print(CH4);
+    myFile.print(", ");
+    myFile.print(latitude, 6);  // 6 decimal places for latitude
+    myFile.print(", ");
+    myFile.print(longitude, 6);  // 6 decimal places for longitude
+    myFile.print(", ");
+    myFile.println(pressureAltitude);
+    myFile.print(gpsAltitude);
+    myFile.print(", ");
+    myFile.print(CH4);
+    myFile.print(", ");
+    
+    // Sync to ensure data is written to SD card
+    myFile.sync();
+    
+    // Close the file
+    myFile.close();
+    
+    Serial.println("Data written to SD card.");
+  } else {
+    Serial.println("Failed to open file for appending.");
+  }
+  
+}
 
+/*void saveImageToSD() {
+  String timestamp = getTimestamp();  // Call your timestamp function
+  char filename[32];
+  snprintf(filename, sizeof(filename), "%s.jpg", timestamp.c_str());
+
+  if (!myFile.open(filename, O_WRITE | O_CREAT | O_TRUNC)) {
+    Serial.println("File open failed");
+    return;
+  }
+
+  myCAM.CS_LOW();
+  SPI.transfer(BURST_FIFO_READ);
+
+  const uint8_t BURST_SIZE = 128;
+  uint8_t buf[BURST_SIZE];
+  uint32_t remaining = len;  // 'len' must be the number of bytes in the image
+
+  while (remaining > 0) {
+    uint8_t toRead = remaining >= BURST_SIZE ? BURST_SIZE : remaining;
+    for (uint8_t i = 0; i < toRead; i++) {
+      buf[i] = SPI.transfer(0x00);
+    }
+    myFile.write(buf, toRead);
+    remaining -= toRead;
+  }
+
+  myFile.close();  // Don't forget to close the file!
+  myCAM.CS_HIGH();
+
+  Serial.print("Saved image as: ");
+  Serial.println(filename);
+}
+*/
+
+void baterryPercentage()
+{
+  raw_adc = analogRead(BATTERY_PIN);
+  measured_voltage = (raw_adc / float(ADC_MAX)) * ADC_REF_VOLTAGE;      // From ADC reading
+  battery_voltage = measured_voltage * VOLTAGE_DIVIDER_SCALE;           // Remap to battery voltage
+
+  battery = 0.0;
+
+  // Estimate battery percentage linearly (modify for more accuracy with real SOC curves)
+  if (battery_voltage <= BMS_CUTOFF_VOLTAGE) {
+    battery = 0.0;
+  } else if (battery_voltage >= 8.4) {
+    battery = 100.0;
+  } else {
+    battery = ((battery_voltage - BMS_CUTOFF_VOLTAGE) / (8.4 - BMS_CUTOFF_VOLTAGE)) * 100.0;
+  }
+
+  Serial.print("ADC Value: ");
+  Serial.print(raw_adc);
+  Serial.print(" | Voltage: ");
+  Serial.print(battery_voltage, 2);
+  Serial.print(" V | Battery: ");
+  Serial.print(battery, 1);
+  Serial.println(" %");
+
+}
+
+String getTimestamp() {
+  if (gps.date.isValid() && gps.time.isValid()) {
+    int year   = gps.date.year();
+    int month  = gps.date.month();
+    int day    = gps.date.day();
+    int hour   = gps.time.hour();
+    int minute = gps.time.minute();
+    int second = gps.time.second();
+
+    snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02d-%02d-%02d-%02d",
+             year, month, day, hour, minute, second);
+    return String(timestamp);
+  } else {
+    return "0000-00-00-00-00-00"; // Invalid or no fix yet
+  }
+  
+}

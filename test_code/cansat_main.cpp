@@ -55,6 +55,7 @@ float longitude;
 float pressure;
 float altitude;
 float co2ppm;
+float gpsAltitude;
 int camerainitialized;
 const int maxRetries=5;
 int attempt;
@@ -264,6 +265,7 @@ void loop(){
       Serial.print(" Course: ");
       Serial.println(gps.course.deg());  // course in degrees
       gpsAvailable = gps.location.isValid() && gps.time.isValid();
+
     
   }
   else{

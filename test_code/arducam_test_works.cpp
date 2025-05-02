@@ -24,7 +24,7 @@ void setup() {
 
   Wire.begin();
   SPI.begin();
-  SPI.setFrequency(4000000); // 4MHz
+  SPI.setFrequency(16000000); // 4MHz
 
   Serial.println(F("[INFO] ArduCAM Serial Image Capture"));
 
@@ -35,7 +35,7 @@ void setup() {
   myCAM.InitCAM();
 
   myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);
-  myCAM.OV5642_set_JPEG_size(OV5642_1280x960);
+  myCAM.OV5642_set_JPEG_size(OV5642_640x480);
 
 
   myCAM.clear_fifo_flag();
