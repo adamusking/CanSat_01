@@ -4,8 +4,6 @@
 #include "memorysaver.h"
 
 const int CS = 10;
-const int CAM_POWER_ON = 0;
-
 
 ArduCAM myCAM(OV5642, CS);
 
@@ -19,8 +17,6 @@ void sendCapturedImageOverSerial();
 void setup() {
   Serial.begin(115200);
   pinMode(CS, OUTPUT);
-  pinMode(CAM_POWER_ON , OUTPUT);
-  digitalWrite(CAM_POWER_ON, HIGH);
 
   Wire.begin();
   SPI.begin();

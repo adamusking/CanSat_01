@@ -29,5 +29,5 @@ void loop() {
         Serial.println(period);
     }
     
-    delay(2000); // Wait for 2 seconds before the next reading
+    delay(1000); // Wait for 2 seconds before the next reading
 }
