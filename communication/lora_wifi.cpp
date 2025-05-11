@@ -1,12 +1,22 @@
 #include <RadioLib.h>
 #include <SPI.h>
+#include <WiFi.h>
+#include <ESP32_FTPClient.h>
 
 #define ss 47
 #define rst 41
 #define dio0 19
 #define mosi 36
 #define miso 42
-#define sck 40 
+#define sck 40
+
+#define WIFI_SSID "Unicron"
+#define WIFI_PASSWORD "Unicron1234rq-"
+
+char ftp_server[] = "192.168.0.1";
+char ftp_user[]   = "anonymous";
+char ftp_pass[]   = "heslo";
+ESP32_FTPClient ftp (ftp_server,ftp_user,ftp_pass, 5000, 2);
 
 int count = 0;
 SX1276 radio = new Module(ss, dio0, rst);
@@ -20,6 +30,9 @@ volatile bool receivedFlag = false;
 void setFlag(void) {
   receivedFlag = true;
 }
+
+void handleCommand(String cmd);
+void wifi_ftp_transfer();
 
 typedef struct {
     uint16_t packetID;
@@ -61,7 +74,7 @@ void setup() {
     while (true) { delay(10); }
   }
 
-  state = radio.setFrequency(866.0);
+  state = radio.setFrequency(869.525);
   state = radio.setBandwidth(125.0);
   state = radio.setSpreadingFactor(7);
   state = radio.setCodingRate(5);
@@ -90,7 +103,7 @@ void loop() {
   
   TelemetryPacket packet;
   packet.packetID = count++;
-  packet.temperature = 25;
+  packet.temperature = 2500;
   packet.pressure = 9;
   packet.gpsAltitude = 6; 
   packet.pressureAltitude = 54;
@@ -157,12 +170,10 @@ void loop() {
     Serial.println(state);
   }
 
-
-  radio.startReceive();
+  String incoming_data;
 
   if (receivedFlag) {
     receivedFlag = false;
-    String incoming_data;
     int state = radio.readData(incoming_data);
 
     if (state == RADIOLIB_ERR_NONE) {
@@ -183,8 +194,74 @@ void loop() {
       Serial.println(state);
     }
 
-    radio.startReceive();
   }
 
+  handleCommand(incoming_data);
+
   delay(1000);
+}
+
+void handleCommand(String cmd) {
+  Serial.println("hanlde command triggered!");
+  int commaIndex = cmd.indexOf(',');
+  if (commaIndex == -1) return;
+
+  String command = cmd.substring(commaIndex + 1);
+
+  if (command == "WIFI") {
+    Serial.println("Connecting to wifi and ftp server...");
+    wifi_ftp_transfer();
+  }
+  else if(command == "WIFI_NO"){
+    if(WiFi.status() == WL_CONNECTED){  // wifi connection is active
+  // ditch the existing connection
+  WiFi.disconnect();
+  // allow some time for the connection to be fully dropped, important!
+  delay(100);
+  // check if the connection was really dropped
+  if(WiFi.status() == WL_CONNECTED){
+    Serial.println("Connection is still alive...");
+  }else{
+    Serial.println("Connection successfully terminated.");
+    Serial.println(WiFi.localIP());
+  }
+}else{  // there was no wifi connection to begin with, so nothing to disconnect
+  Serial.println("No active connection was found to be terminated.");
+}
+
+  }
+}
+
+void wifi_ftp_transfer(){
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to WiFi ..");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print('.');
+    delay(1000);
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.print("RRSI: ");
+  Serial.println(WiFi.RSSI());
+
+  delay(500);
+
+  ftp.OpenConnection();
+
+  // change to dir where to store
+  ftp.ChangeWorkDir("/data");  
+
+  // create the file new and write a string into it
+  ftp.InitFile("Type A");
+  ftp.NewFile("hello_world.csv"); //<- .csv in this exmple - can be .txt ot other
+  ftp.Write("Hello World");
+  ftp.CloseFile();
+
+  ftp.CloseConnection();
+  Serial.println("All files uploaded successfully!");
 }
