@@ -18,15 +18,19 @@ SdFile myFile;
 void setup() {
   Serial.begin(115200);
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN);
+  SPI.setFrequency(300000);
   // Initialize SD card
   if (!SD.begin(SD_CS)) {
+    SD.errorPrint(&Serial);
     Serial.println("SD card initialization failed!");
     return;
-  }
+  }               
+  
   Serial.println("SD card initialized.");
   
   // Open the CSV file (create it if it doesn't exist)
-  if (!myFile.open("data.csv", O_WRITE | O_CREAT | O_APPEND)) {
+  if (!SD.exists("data.csv"))
+  {if (!myFile.open("data.csv", O_WRITE | O_CREAT | O_APPEND)) {
     Serial.println("Failed to open file.");
     return;
   }
@@ -36,7 +40,7 @@ void setup() {
   
   // Close the file initially to start fresh writing
   myFile.close();
-}
+}}
 
 // Loop function
 void loop() {

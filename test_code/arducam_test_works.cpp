@@ -3,7 +3,17 @@
 #include <SPI.h>
 #include "memorysaver.h"
 
-const int CS = 10;
+const int CS = 1;
+const int SD_CS=35;
+const int COM_CS=47;
+
+#define I2C_SDA 45
+#define I2C_SCL 48
+
+#define SCK_PIN  40
+#define MISO_PIN 42
+#define MOSI_PIN 36
+
 
 ArduCAM myCAM(OV5642, CS);
 
@@ -17,10 +27,14 @@ void sendCapturedImageOverSerial();
 void setup() {
   Serial.begin(115200);
   pinMode(CS, OUTPUT);
-
-  Wire.begin();
-  SPI.begin();
-  SPI.setFrequency(16000000); // 4MHz
+  pinMode(SD_CS, OUTPUT);
+  pinMode(COM_CS, OUTPUT);
+  
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(COM_CS, HIGH);
+  Wire.begin(I2C_SDA, I2C_SCL);
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN);
+  SPI.setFrequency(4000000); // 4MHz
 
   Serial.println(F("[INFO] ArduCAM Serial Image Capture"));
 
@@ -46,6 +60,7 @@ void loop() {
 }
 
 void initializeCamera() {
+
   myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
   uint8_t temp = myCAM.read_reg(ARDUCHIP_TEST1);
   if (temp != 0x55) {
@@ -56,7 +71,7 @@ void initializeCamera() {
 
 void checkCameraModule() {
   uint8_t vid, pid;
-
+ 
 
   myCAM.wrSensorReg16_8(0xff, 0x01);
   myCAM.rdSensorReg16_8(OV5642_CHIPID_HIGH, &vid);

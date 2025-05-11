@@ -10,10 +10,12 @@
 #include <TinyGPS++.h>
 #include <HardwareSerial.h>
 #include <esp_system.h>
-#include <SdFat.h>
+#include <SD.h>
 #include <RadioLib.h>
 #include <WiFi.h>
 #include <ESP32_FTPClient.h>
+
+File file ; 
 
 #define ss 47
 #define rst 41
@@ -35,25 +37,29 @@
 const int CAM_CS = 1;
 const int buzzerPin = 8;
 const int pwmPin = 3;
+const int calibrationPin = 16;
 
 #define BATTERY_PIN 20            
 #define ADC_MAX 4095              
 #define ADC_REF_VOLTAGE 3.3         // Default ADC reference voltage
 #define VOLTAGE_DIVIDER_SCALE 8.4 / 2.9178  
-#define BMS_CUTOFF_VOLTAGE 6.0 
+#define BMS_CUTOFF_VOLTAGE 6.3
+#define DEFAULT_HEIGHT 180
+
+const uint32_t max_fifo_size = 8 * 1024 * 1024;
+
 
 Adafruit_ADS1115 ads;
 Adafruit_BMP3XX bmp;
 TinyGPSPlus gps;  
 Adafruit_SGP30 sgp;
-SdFat SD;
-SdFile myFile;
 HardwareSerial GPS(1);  // use UART1 for the GPS module
 
 
 ArduCAM myCAM(OV5642, CAM_CS);
 
 String timestamp;
+uint16_t imageCounter = 1;
 
 #define WIFI_SSID "Unicron"
 #define WIFI_PASSWORD "Unicron1234rq-"
@@ -76,6 +82,7 @@ void setFlag(void) {
   receivedFlag = true;
 }
 
+const char* directory = "/";
 
 float TVOC;
 float temperature;
@@ -95,22 +102,35 @@ float gpsAltSeaLevel;
 float battery;
 float measured_voltage;
 float battery_voltage;
-float startingPressure;
+float startingPressure=95000;
 float gpsStartingAlt;
 float altSum;
 float gpsAltitude;
-float verticalSpeed; // placeholder
+float verticalSpeed;
+float lastPressureAltitude;
+unsigned long lastTime = millis();
 float predictedLongitude; // placeholder
 float predictedLatitude; // placeholder
+
+int buzzerOn=0;
+int buzzerHeight=0;
+int countAltitude=0;
+int fallbackCounter = 1;
 
 int camerainitialized;
 const int maxRetries=5;
 
 int attempt;
 int raw_adc;
-int counting;
-int countingGPS;
-int pressureSum;
+int counting=0;
+int countingGPS=0;
+int pressureSum=0;
+
+uint8_t buf[256];         // image data buffer
+uint32_t length;          // length of image data
+uint8_t temp, temp_last;  // for JPEG marker detection
+bool is_header = false;   // flag for header detection
+int i = 0;  
 
 char filename[32];
 
@@ -126,12 +146,15 @@ void s8Read();
 void saveSensorData();
 void readAnalogSensors();
 void writeDataToSD();
-void saveImageToSD();
+void saveImageToSD(fs::FS &fs);
 void baterryPercentage();
 String getTimestamp();
 void handleCommand(String cmd);
 void wifi_ftp_transfer();
 void lora_com();
+void turnOnBuzzer();
+void uploadAllFilesFromSD();
+void calculateVerticalSpeed();
 
 typedef struct {
     uint16_t packetID;
@@ -162,29 +185,44 @@ void setup() {
     Serial.begin(115200);
     
     pinMode(CAM_CS, OUTPUT);
+    pinMode(calibrationPin, OUTPUT);
     pinMode(buzzerPin, OUTPUT);
     pinMode(SD_CS, OUTPUT);
+    pinMode(ss, OUTPUT);
     pinMode(BATTERY_PIN, INPUT);
     analogReadResolution(12);
 
     Wire.begin(I2C_SDA, I2C_SCL);
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN);
-    //SPI.setFrequency(4000000); // 4MHz
+    SPI.setFrequency(4000000); // 4MHz
+
+    digitalWrite(CAM_CS, LOW);
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, HIGH);
+    digitalWrite(calibrationPin, HIGH);
   
     Serial.println(F("[INFO] ArduCAM Serial Image Capture"));
-  
+
+    
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, HIGH);
+
     initializeCamera();
     checkCameraModule();
-  
+
     myCAM.set_format(JPEG);
     myCAM.InitCAM();
   
     myCAM.write_reg(ARDUCHIP_TIM, VSYNC_LEVEL_MASK);
-    myCAM.OV5642_set_JPEG_size(OV5642_1280x960);
+    myCAM.OV5642_set_JPEG_size(OV5642_640x480);
   
   
     myCAM.clear_fifo_flag();
     delay(100);
+
+    digitalWrite(CAM_CS, HIGH);
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, HIGH);
 
     pinMode(pwmPin, INPUT);
 
@@ -242,6 +280,12 @@ void setup() {
     Serial.println("ADS initialized");
     ads.setGain(GAIN_ONE); 
     }
+
+    digitalWrite(CAM_CS, HIGH);
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, LOW);
+   
+
     while (!SD.begin(SD_CS)&&attempt<maxRetries) {
       Serial.println("SD card initialization failed!");
       Serial.print(attempt);
@@ -256,15 +300,20 @@ void setup() {
     Serial.println("SD card initialized.");
     attempt=0;
     }
-    if (!myFile.open("data.csv", O_WRITE | O_CREAT | O_APPEND)) {
-      Serial.println("Failed to open file.");
-      
-    }
-    else {
-    myFile.println("time, temperature, pressure, gpsAltitude, pressureAltitude, gpsAltSeaLevel, pressureAltSeaLevel, verticalSpeed, horizontalSpeed, battery, latitude, longitude, predictedLongitude, predictedLatitude, CO2, CO, CH4, NO2, SO2, TVOC");
-    myFile.sync();
-    myFile.close();
-    }
+
+    File myFile = SD.open("/data.csv", FILE_WRITE);
+if (!myFile) {
+  Serial.println("Failed to open file.");
+} else {
+  myFile.println("time, temperature, pressure, gpsAltitude, pressureAltitude, gpsAltSeaLevel, pressureAltSeaLevel, verticalSpeed, horizontalSpeed, battery, latitude, longitude, predictedLongitude, predictedLatitude, CO2, CO, CH4, NO2, SO2, TVOC");
+  myFile.flush();  // flush() is the equivalent of sync() in SD.h
+  myFile.close();
+}
+
+
+    digitalWrite(CAM_CS, HIGH);
+    digitalWrite(ss, LOW);
+    digitalWrite(SD_CS, HIGH);
 
     Serial.print(F("[SX1276] Initializing ... "));
   int state = radio.begin();
@@ -295,11 +344,16 @@ void setup() {
     Serial.print(F("failed, code "));
     Serial.println(state);
     while (true) { delay(10); }
+
+    digitalWrite(CAM_CS, HIGH);
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, HIGH);
   }
   }
 
 
 void loop(){
+  unsigned long loopStartTime = millis();
   bmpRead();
   readGPS();
   readSGP();
@@ -312,18 +366,30 @@ void loop(){
   readAnalogSensors();
 
   writeDataToSD();
-  saveImageToSD();
+  saveImageToSD(SD);
   
   baterryPercentage();
   //tone(buzzerPin, 8000);  
   //delay(500);
   //noTone(buzzerPin);      
   lora_com();
-  delay(1000);
+  wifi_ftp_transfer();
+  //turnOnBuzzer();
+  //delay(1000);
+  if (buzzerOn==1){
+    wifi_ftp_transfer();
+  }
+  unsigned long loopDuration = millis() - loopStartTime;
+  if (loopDuration < 1000) {
+    delay(1000 - loopDuration);
+}
 }
 
 
   void initializeCamera() {
+  
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, HIGH);
     myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
     uint8_t temp = myCAM.read_reg(ARDUCHIP_TEST1);
     while ((temp != 0x55)&&attempt<maxRetries) {
@@ -341,6 +407,9 @@ void loop(){
   }
   
   void checkCameraModule() {
+  
+    digitalWrite(ss, HIGH);
+    digitalWrite(SD_CS, HIGH);
     uint8_t vid, pid;
   
   
@@ -377,9 +446,9 @@ void loop(){
     Serial.println(" °C");
 
     Serial.print("Pressure = ");
-    pressure=(bmp.pressure/100);
+    pressure=(bmp.pressure);
     Serial.print(pressure);
-    Serial.println(" hPa");
+    Serial.println(" Pa");
 
     Serial.print("Altitude from sea level = ");
     Serial.print(bmp.readAltitude(1013.25));
@@ -387,8 +456,9 @@ void loop(){
     Serial.println(" m");
 
     Serial.print("Altitude = ");
-    Serial.print(bmp.readAltitude(startingPressure));
-    pressureAltSeaLevel=bmp.readAltitude(startingPressure);
+    Serial.println(bmp.readAltitude(startingPressure/100));
+    pressureAltSeaLevel=bmp.readAltitude(startingPressure/100);
+    
     Serial.println(" m");
 
     if (counting < 10)
@@ -401,6 +471,8 @@ void loop(){
       startingPressure=pressureSum/10;
       counting++;
     }
+
+    Serial.println(startingPressure);
   }
 
   void readGPS() {
@@ -415,7 +487,7 @@ void loop(){
       Serial.print(gps.location.lng(), 6);
       longitude=gps.location.lng();
       Serial.print(" Altitude: ");
-      Serial.print(gps.altitude.meters());
+      Serial.println(gps.altitude.meters());
       gpsAltitudeSeaLevel=gps.altitude.meters();
       if (countingGPS<5)
       {
@@ -428,7 +500,7 @@ void loop(){
         gpsStartingAlt=altSum/5;
       }
       gpsAltitude=gpsAltitudeSeaLevel-gpsStartingAlt;
-
+      Serial.println(gpsStartingAlt);
       Serial.print(" Speed: ");
       Serial.print(gps.speed.kmph());
       speed=gps.speed.kmph();
@@ -459,6 +531,7 @@ void loop(){
   }
   void startCapture() {
     if (camerainitialized==1){
+    myCAM.flush_fifo();
     Serial.println(F("[INFO] Starting capture..."));
     myCAM.clear_fifo_flag();
     myCAM.start_capture();
@@ -483,7 +556,7 @@ void loop(){
       return;
     }
   
-    if (len >= MAX_FIFO_SIZE) {
+    if (len >= max_fifo_size) {
       Serial.println(F("[ERROR] Image too large for FIFO."));
       return;
     }
@@ -562,7 +635,7 @@ void loop(){
   
     concentration=voltage/0.03;
     
-    NO2=concentration;
+    NO2=concentration-83.3;
     if (NO2 < 0)
     {
       NO2=0;
@@ -577,101 +650,154 @@ void loop(){
     CH4=adc0; //add calculation after calibration IMPORTANT
     Serial.println(adc0);
   }
-void writeDataToSD() {
-  String timestamp = getTimestamp(); 
-  if (myFile.open("data.csv", O_WRITE | O_APPEND)) {
-    // Write data to file (replace timestamp with actual timestamp generation logic)
-    myFile.print(timestamp);  // Placeholder for timestamp
-    myFile.print(", ");
-    myFile.print(temperature);
-    myFile.print(", ");
-    Serial.println(pressure);
-    myFile.print(", ");
-    myFile.print(gpsAltitude);
-    myFile.print(", ");
-    myFile.print(pressureAltitude);
-    myFile.print(", ");
-    myFile.print(gpsAltSeaLevel);
-    myFile.print(", ");
-    myFile.print(pressureAltSeaLevel);
-    myFile.print(", ");
-    myFile.print(verticalSpeed);
-    myFile.print(", ");
-    myFile.print(speed);
-    myFile.print(", ");
-    myFile.print(battery);
-    myFile.print(", ");
-    myFile.print(latitude, 6);  // 6 decimal places for latitude
-    myFile.print(", ");
-    myFile.print(longitude, 6);  // 6 decimal places for longitude
-    myFile.print(", ");
-    myFile.print(predictedLongitude, 6);
-    myFile.print(", ");
-    myFile.print(predictedLatitude, 6);
-    myFile.print(", ");
-    myFile.print(CO2);
-    myFile.print(", ");
-    myFile.print(CO);
-    myFile.print(", ");
-    myFile.print(CH4);
-    myFile.print(", ");
-    myFile.print(NO2);
-    myFile.print(", ");
-    myFile.print(SO2);
-    myFile.print(", ");
-    myFile.print(TVOC);
-    myFile.println(", ");
-
-    
-    // Sync to ensure data is written to SD card
-    myFile.sync();
-    
-    // Close the file
-    myFile.close();
-    
-    Serial.println("Data written to SD card.");
-  } else {
-    Serial.println("Failed to open file for appending.");
+  void writeDataToSD() {
+    String timestamp = getTimestamp(); 
+  
+    File myFile = SD.open("/data.csv", FILE_APPEND);  // Leading slash required
+  
+    if (myFile) {
+      myFile.print(timestamp);
+      myFile.print(",");
+      myFile.print(temperature);
+      myFile.print(",");
+      myFile.print(pressure);
+      myFile.print(",");
+      myFile.print(gpsAltitude);
+      myFile.print(",");
+      myFile.print(pressureAltitude);
+      myFile.print(",");
+      myFile.print(gpsAltSeaLevel);
+      myFile.print(",");
+      myFile.print(pressureAltSeaLevel);
+      myFile.print(",");
+      myFile.print(verticalSpeed);
+      myFile.print(",");
+      myFile.print(speed);
+      myFile.print(",");
+      myFile.print(battery_voltage);
+      myFile.print(",");
+      myFile.print(battery);
+      myFile.print(",");
+      myFile.print(latitude, 6);
+      myFile.print(",");
+      myFile.print(longitude, 6);
+      myFile.print(",");
+      myFile.print(predictedLongitude, 6);
+      myFile.print(",");
+      myFile.print(predictedLatitude, 6);
+      myFile.print(",");
+      myFile.print(CO2);
+      myFile.print(",");
+      myFile.print(CO);
+      myFile.print(",");
+      myFile.print(CH4);
+      myFile.print(",");
+      myFile.print(NO2);
+      myFile.print(",");
+      myFile.print(SO2);
+      myFile.print(",");
+      myFile.print(TVOC);
+      myFile.println(",");
+  
+      myFile.flush();  // Use flush() instead of sync() with SD.h
+      myFile.close();
+  
+      Serial.println("Data written to SD card.");
+    } else {
+      Serial.println("Failed to open file for appending.");
+    }
   }
   
-}
 
-void saveImageToSD() {
-  String timestamp = getTimestamp(); 
-  char filename[32];
-  snprintf(filename, sizeof(filename), "%s.jpg", timestamp.c_str());
+void saveImageToSD(fs::FS &fs) {
+  digitalWrite(ss, HIGH);
+  
+  String filename = "/" + getTimestamp() + ".jpg";
+  char filenameChar[32];
+  filename.toCharArray(filenameChar, sizeof(filenameChar));
 
-  if (!myFile.open(filename, O_WRITE | O_CREAT | O_TRUNC)) {
-    Serial.println("File open failed");
+  
+  uint8_t buf[256];
+  uint8_t temp = 0, temp_last = 0;
+  bool is_header = false;
+  size_t i = 0;
+
+  myCAM.flush_fifo();
+  myCAM.clear_fifo_flag();
+  myCAM.start_capture();
+  Serial.println(F("Start Capture"));
+
+  while (!myCAM.get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK));
+
+  Serial.println(F("Capture Done."));
+  uint32_t length = myCAM.read_fifo_length();
+  Serial.print(F("The fifo length is :"));
+  Serial.println(length, DEC);
+
+  if (length >= max_fifo_size) {
+    Serial.println(F("Over size."));
+    return;
+  }
+
+  if (length == 0) {
+    Serial.println(F("Size is 0."));
+    return;
+  }
+
+  File file = fs.open(filenameChar, FILE_WRITE);
+  if (!file) {
+
+    Serial.println("Failed to open file for writing");
     return;
   }
 
   myCAM.CS_LOW();
   SPI.transfer(BURST_FIFO_READ);
 
-  myCAM.set_fifo_burst(); 
+  while (length--) {
+    temp_last = temp;
+    temp = SPI.transfer(0x00);
 
-  const uint8_t BURST_SIZE = 128;
-  uint16_t buf[BURST_SIZE];
-  uint32_t len = myCAM.read_fifo_length();
-  uint32_t remaining = len;
-
-  while (remaining > 0) {
-    uint8_t toRead = remaining >= BURST_SIZE ? BURST_SIZE : remaining;
-    for (uint8_t i = 0; i < toRead; i++) {
-      buf[i] = SPI.transfer(0x00);
+    if ((temp == 0xD9) && (temp_last == 0xFF)) {
+      buf[i++] = temp;
+      myCAM.CS_HIGH();
+      file.write(buf, i);
+      file.close();
+      Serial.println(F("Image save OK."));
+      return;
     }
-    myFile.write(buf, toRead);
-    remaining -= toRead;
+
+    if (is_header) {
+      if (i < sizeof(buf)) {
+        buf[i++] = temp;
+      } else {
+        myCAM.CS_HIGH();
+        file.write(buf, sizeof(buf));
+        i = 0;
+        buf[i++] = temp;
+        myCAM.CS_LOW();
+        SPI.transfer(BURST_FIFO_READ);
+      }
+    } else if ((temp == 0xD8) && (temp_last == 0xFF)) {
+      is_header = true;
+      buf[0] = temp_last;
+      buf[1] = temp;
+      i = 2;
+    }
   }
 
-  myFile.sync();   // Ensure buffer is flushed
-  myFile.close();  // Very important!
   myCAM.CS_HIGH();
-
-  Serial.print("Saved image as: ");
-  Serial.println(filename);
+  file.close(); // In case of abnormal termination
+  Serial.println(F("Image save aborted or incomplete."));
 }
+
+   
+  
+ /* if (myFile.isOpen()) {
+    myFile.close(); // force close if not already
+    Serial.println(F("[WARN] File was force-closed due to missing JPEG end."));
+  }*/
+
 
 
 void baterryPercentage()
@@ -715,7 +841,9 @@ String getTimestamp() {
              year, month, day, hour, minute, second);
     return String(timestamp);
   } else {
-    return "0000-00-00-00-00-00"; // Invalid or no fix yet
+    char fallbackName[16];
+    snprintf(fallbackName, sizeof(fallbackName), "%05d.jpg", fallbackCounter++);
+    return String(fallbackName);
   }
   
 }
@@ -773,42 +901,36 @@ void handleCommand(String cmd) {
     ftp.OpenConnection();
   
     // change to dir where to store
-    ftp.ChangeWorkDir("/data");  
-  
-    // create the file new and write a string into it
-    ftp.InitFile("Type A");
-    ftp.NewFile("hello_world.csv"); //<- .csv in this exmple - can be .txt ot other
-    ftp.Write("Hello World");
-    ftp.CloseFile();
+    uploadAllFilesFromSD();
   
     ftp.CloseConnection();
     Serial.println("All files uploaded successfully!");
   }
 
   void lora_com(){
-    Serial.println("\n\n---Transmitting--");
+  Serial.println("\n\n---Transmitting--");
   Serial.print(F("[SX1276] Transmitting packet ... "));
   
   TelemetryPacket packet;
   packet.packetID = count++;
-  packet.temperature = temperature;
-  packet.pressure = pressure;
-  packet.gpsAltitude = gpsAltitude; 
-  packet.pressureAltitude = pressureAltitude;
-  packet.gpsAltSeaLevel = gpsAltSeaLevel; 
-  packet.pressureAltSeaLevel = pressureAltSeaLevel;
-  packet.verticalSpeed = verticalSpeed; 
-  packet.horizontalSpeed = speed;
-  packet.battery = battery;
-  packet.latitude = latitude;
-  packet.longitude = longitude;
-  packet.predictedLongitude = 98;
-  packet.predictedLatitude = 74;
-  packet.CO2 = CO2;
-  packet.CO = CO;
-  packet.CH4 = CH4;
-  packet.NO2 = NO2;
-  packet.SO2 = SO2;
+  packet.temperature = temperature*10;
+  packet.pressure = (pressure-80000)/100;
+  packet.gpsAltitude = gpsAltitude*10; 
+  packet.pressureAltitude = pressureAltitude*10;
+  packet.gpsAltSeaLevel = gpsAltitudeSeaLevel*10; 
+  packet.pressureAltSeaLevel = pressureAltSeaLevel*10;
+  packet.verticalSpeed = verticalSpeed*10; 
+  packet.horizontalSpeed = speed*10;
+  packet.battery = battery_voltage*100;
+  packet.latitude = latitude*1000000;
+  packet.longitude = longitude*1000000;
+  packet.predictedLongitude = 17.123456*1000000;
+  packet.predictedLatitude = 48.123456*1000000;
+  packet.CO2 = CO2*10;
+  packet.CO = CO*100;
+  packet.CH4 = CH4*100;
+  packet.NO2 = NO2*100;
+  packet.SO2 = SO2*100;
   packet.TVOC = TVOC;
 
   int state = radio.transmit((uint8_t*)&packet, sizeof(TelemetryPacket));
@@ -835,7 +957,7 @@ void handleCommand(String cmd) {
     Serial.println("[SX1276] Waiting for ACK...");
     radio.startReceive();
     unsigned long start = millis();
-    while (millis() - start < 300) {  
+    while (millis() - start < 600) {  
       if (radio.available()) {
         String ack;
         int ackState = radio.readData(ack);
@@ -886,3 +1008,81 @@ void handleCommand(String cmd) {
 
   handleCommand(incoming_data);
   }
+
+  void turnOnBuzzer(){
+    if (pressureAltitude>500){
+      countAltitude++;
+    }
+    if (countAltitude>10){
+      buzzerHeight=1;
+      
+      if (((buzzerHeight=1) & (pressureAltitude<250))||(buzzerOn=1)){
+        buzzerOn=1;
+        tone(buzzerPin, 5000);  
+        delay(500);
+        noTone(buzzerPin);
+      }
+    }
+
+}
+
+
+
+void uploadAllFilesFromSD() {
+  const char* directory = "/";
+  File root = SD.open(directory);
+  if (!root || !root.isDirectory()) {
+    Serial.println("Failed to open SD directory!");
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    if (!file.isDirectory()) {
+      String fileName = String(file.name());
+      size_t fileSize = file.size();
+      Serial.print("Preparing to upload: ");
+      Serial.println(fileName);
+
+      unsigned char* buffer = (unsigned char*)malloc(fileSize);
+      if (!buffer) {
+        Serial.println("Failed to allocate memory for file!");
+        file.close();
+        return;
+      }
+
+      file.read(buffer, fileSize);
+
+      if (fileName.endsWith(".csv") || fileName.endsWith(".txt") || fileName.endsWith(".html")) {
+        ftp.ChangeWorkDir("/data");
+        ftp.InitFile("Type A");  // text mode
+    } else {
+        ftp.ChangeWorkDir("/images");
+        ftp.InitFile("Type I");  // binary mode for images
+    }
+
+      // Upload the file
+      ftp.NewFile(file.name());
+      ftp.WriteData(buffer, fileSize);
+      ftp.CloseFile();
+      Serial.println("Uploaded successfully!");
+
+      free(buffer);
+    }
+    file = root.openNextFile();
+  }
+  root.close();
+}
+void calculateVerticalSpeed(){
+  
+    unsigned long currentTime = millis();
+
+    float deltaTime = (currentTime - lastTime) / 1000.0; // Convert ms to seconds
+
+    if (deltaTime <= 0); // avoid division by zero
+
+    verticalSpeed = (pressureAltitude- lastPressureAltitude) / deltaTime;
+    lastPressureAltitude= pressureAltitude;
+    lastTime = currentTime;
+
+}
