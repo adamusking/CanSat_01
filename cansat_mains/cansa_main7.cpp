@@ -124,6 +124,7 @@ int buzzerHeight=0;
 int countAltitude=0;
 int fallbackCounter = 1;
 int countAltitude2=0;
+int SDinitialized=0;
 
 int camerainitialized;
 const int maxRetries=5;
@@ -306,6 +307,7 @@ void setup() {
       }
     else{
     Serial.println("SD card initialized.");
+    SDinitialized=1;
     attempt=0;
     }
 
@@ -600,8 +602,8 @@ void loop(){
 }
 
   void s8Read() {
-    uint32_t highDuration = pulseIn(pwmPin, HIGH);
-    uint32_t lowDuration = pulseIn(pwmPin, LOW);
+    uint32_t highDuration = pulseIn(pwmPin, HIGH, 100000);
+    uint32_t lowDuration = pulseIn(pwmPin, LOW, 100000);
     uint32_t period = highDuration + lowDuration;
     if (period > 0) {
         float co2Concentration = (highDuration / (float)period) * 2000.0;
@@ -622,7 +624,7 @@ void loop(){
     float concentration=voltage/0.02;
   
     CO=concentration;
-    abs(SO2);
+    //abs(CO);
     if (CO < 0)
     {
       CO=0;
@@ -638,7 +640,7 @@ void loop(){
     concentration=voltage/0.02;
 
     SO2=concentration;
-    abs(SO2);
+    //abs(SO2);
     if (SO2 < 0)
     {
       SO2=0;
@@ -649,12 +651,12 @@ void loop(){
     Serial.println(adc0);
 
     adc0 = ads.readADC_SingleEnded(2);
-    voltage = adc0 * 0.000125;  // convert ADC value to voltage
+    voltage = (adc0 * 0.000125)-20000;  // convert ADC value to voltage
 
     concentration = 1.0 / (voltage / 0.03);  // inverted relationship
 
-    NO2 = concentration - 83.3;
-    abs(NO2);
+    NO2 = concentration;
+    //abs(NO2);
     if (NO2 < 0)
     {
       NO2 = 0;
@@ -670,7 +672,8 @@ Serial.println(adc0);
     Serial.println(CH4);
   }
   void writeDataToSD() {
-    String timestamp = getTimestamp(); 
+    if (SDinitialized==1){
+      String timestamp = getTimestamp(); 
   
     File myFile = SD.open("/data.csv", FILE_APPEND);  // Leading slash required
   
@@ -715,7 +718,7 @@ Serial.println(adc0);
       myFile.print(",");
       myFile.print(SO2);
       myFile.print(",");
-      myFile.print(TVOC); //myfile.prinLN do no forget next time
+      myFile.println(TVOC); //myfile.prinLN do no forget next time IMPORANTANT
       
   
       myFile.flush();  // Use flush() instead of sync() with SD.h
@@ -726,9 +729,12 @@ Serial.println(adc0);
       Serial.println("Failed to open file for appending.");
     }
   }
+  }
   
 
 void saveImageToSD(fs::FS &fs) {
+  if (SDinitialized==1){
+
   digitalWrite(ss, HIGH);
   
   String filename = "/" + getTimestamp() + ".jpg";
@@ -808,6 +814,7 @@ void saveImageToSD(fs::FS &fs) {
   myCAM.CS_HIGH();
   file.close(); // In case of abnormal termination
   Serial.println(F("Image save aborted or incomplete."));
+}
 }
 
    
@@ -1035,7 +1042,7 @@ void handleCommand(String cmd) {
     if (countAltitude>10){
       buzzerHeight=1;
       
-      if (((buzzerHeight=1) & (pressureAltSeaLevel<250))||(buzzerOn=1)){
+      if (((buzzerHeight==1) && (pressureAltSeaLevel<250))||(buzzerOn==1)){
         countAltitude2++;
         if (countAltitude2>5){
         buzzerOn=1;
@@ -1101,7 +1108,7 @@ void calculateVerticalSpeed(){
 
     float deltaTime = (currentTime - lastTime) / 1000.0; // Convert ms to seconds
 
-    if (deltaTime <= 0); // avoid division by zero
+    if (deltaTime <= 0) return; // avoid division by zero
 
     verticalSpeed = (pressureAltitude- lastPressureAltitude) / deltaTime;
     lastPressureAltitude= pressureAltitude;
@@ -1111,6 +1118,7 @@ void calculateVerticalSpeed(){
 
 void estimateLandingPosition() {
   // Calculate time of descent
+  if (abs(verticalSpeed) < 0.1) return;
   float descentTime = pressureAltitude / verticalSpeed;
 
   // Calculate total horizontal drift distance (max wind-limited)
