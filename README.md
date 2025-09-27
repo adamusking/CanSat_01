@@ -26,7 +26,7 @@ This project provides a practical introduction to satellite engineering and spac
 
 The repository is organized as follows:
 
-- **`cansat_mains/`** – Main firmware for the CanSat operations.  
+- **`cansat_mains/`** – Test main scripts for experimenting with CanSat functionalities    
 - **`communication/`** – Handles data transmission and reception between the CanSat and the ground station.  
 - **`include/`** – Header files for various modules and configurations.  
 - **`lib/`** – Libraries for sensor interfacing and other utilities.  
